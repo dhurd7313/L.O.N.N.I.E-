@@ -1,0 +1,307 @@
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type, x-ai-provider, x-ai-key",
+};
+
+const PROVIDER_URLS: Record<string, string> = {
+  openai: "https://api.openai.com/v1/chat/completions",
+  anthropic: "https://api.anthropic.com/v1/messages",
+  google:
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent",
+};
+
+const SYSTEM_PROMPT = `You are LONNIE — an autonomous, goal-driven AI companion...`;
+
+/* ----------------------- CORE UTILS ----------------------- */
+
+function jsonError(message: string, status = 400) {
+  return new Response(JSON.stringify({ error: message }), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
+
+function sseHeaders() {
+  return {
+    ...corsHeaders,
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  };
+}
+
+function createSSEStream(
+  handler: (writer: WritableStreamDefaultWriter<Uint8Array>) => Promise<void>
+) {
+  const { readable, writable } = new TransformStream();
+  const writer = writable.getWriter();
+  const encoder = new TextEncoder();
+
+  (async () => {
+    try {
+      // 🔥 CRITICAL: send immediately (prevents 524)
+      await writer.write(
+        encoder.encode(`data: {"choices":[{"delta":{"content":""}}]}\n\n`)
+      );
+
+      // 🔁 keepalive ping every 15s (Cloudflare safe)
+      const ping = setInterval(() => {
+        writer.write(encoder.encode(`: ping\n\n`)).catch(() => {});
+      }, 15000);
+
+      await handler(writer);
+
+      clearInterval(ping);
+
+      await writer.write(encoder.encode("data: [DONE]\n\n"));
+      await writer.close();
+    } catch (e) {
+      try {
+        await writer.write(
+          encoder.encode(
+            `data: ${JSON.stringify({
+              error: e instanceof Error ? e.message : "stream error",
+            })}\n\n`
+          )
+        );
+        await writer.close();
+      } catch {}
+    }
+  })();
+
+  return readable;
+}
+
+async function safeFetch(url: string, options: RequestInit, label: string) {
+  try {
+    const resp = await fetch(url, options);
+    if (!resp.ok) {
+      const text = await resp.text();
+      try {
+        const parsed = JSON.parse(text);
+        throw new Error(parsed.error?.message || `${label} error`);
+      } catch {
+        throw new Error(`${label} error (${resp.status})`);
+      }
+    }
+    return resp;
+  } catch (e) {
+    throw new Error(`${label} network failure: ${(e as Error).message}`);
+  }
+}
+
+/* ----------------------- PROVIDERS ----------------------- */
+
+// ✅ FIXED OLLAMA (Cloudflare-safe streaming)
+async function handleOllama(apiKey: string, messages: any[]) {
+  const ollamaUrl = apiKey.replace(/\/+$/, "");
+
+  const resp = await safeFetch(
+    `${ollamaUrl}/api/chat`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "llama3:latest",
+        messages: [{ role: "system", content: SYSTEM_PROMPT }, ...messages],
+        stream: true,
+        options: {
+          num_predict: 512,
+          temperature: 0.7,
+        },
+      }),
+    },
+    "Ollama"
+  );
+
+  const encoder = new TextEncoder();
+
+  const stream = createSSEStream(async (writer) => {
+    const reader = resp.body!.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buf += decoder.decode(value, { stream: true });
+
+      let nl;
+      while ((nl = buf.indexOf("\n")) !== -1) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+
+        if (!line) continue;
+
+        try {
+          const parsed = JSON.parse(line);
+          const text = parsed.message?.content;
+
+          if (text) {
+            const chunk = JSON.stringify({
+              choices: [{ delta: { content: text } }],
+            });
+
+            await writer.write(
+              encoder.encode(`data: ${chunk}\n\n`)
+            );
+          }
+        } catch {}
+      }
+    }
+  });
+
+  return new Response(stream, { headers: sseHeaders() });
+}
+
+// --- OPENAI ---
+async function handleOpenAI(apiKey: string, messages: any[]) {
+  const resp = await safeFetch(
+    PROVIDER_URLS.openai,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-4o",
+        messages: [{ role: "system", content: SYSTEM_PROMPT }, ...messages],
+        stream: true,
+      }),
+    },
+    "OpenAI"
+  );
+
+  return new Response(resp.body!, { headers: sseHeaders() });
+}
+
+// --- ANTHROPIC ---
+async function handleAnthropic(apiKey: string, messages: any[]) {
+  const resp = await safeFetch(
+    PROVIDER_URLS.anthropic,
+    {
+      method: "POST",
+      headers: {
+        "x-api-key": apiKey,
+        "Content-Type": "application/json",
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 4096,
+        system: SYSTEM_PROMPT,
+        messages,
+        stream: true,
+      }),
+    },
+    "Anthropic"
+  );
+
+  return new Response(resp.body!, { headers: sseHeaders() });
+}
+
+// --- GOOGLE ---
+async function handleGoogle(apiKey: string, messages: any[]) {
+  const url = `${PROVIDER_URLS.google}?key=${apiKey}&alt=sse`;
+
+  const contents = messages.map((m: any) => ({
+    role: m.role === "assistant" ? "model" : "user",
+    parts: [{ text: m.content }],
+  }));
+
+  const resp = await safeFetch(
+    url,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+        contents,
+      }),
+    },
+    "Google"
+  );
+
+  const encoder = new TextEncoder();
+
+  const stream = createSSEStream(async (writer) => {
+    const reader = resp.body!.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buf += decoder.decode(value, { stream: true });
+
+      let nl;
+      while ((nl = buf.indexOf("\n")) !== -1) {
+        let line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+
+        if (!line.startsWith("data: ")) continue;
+
+        const json = line.slice(6).trim();
+        if (json === "[DONE]") continue;
+
+        try {
+          const parsed = JSON.parse(json);
+          const text =
+            parsed.candidates?.[0]?.content?.parts?.[0]?.text;
+
+          if (text) {
+            const chunk = JSON.stringify({
+              choices: [{ delta: { content: text } }],
+            });
+
+            await writer.write(
+              encoder.encode(`data: ${chunk}\n\n`)
+            );
+          }
+        } catch {}
+      }
+    }
+  });
+
+  return new Response(stream, { headers: sseHeaders() });
+}
+
+/* ----------------------- MAIN ----------------------- */
+
+serve(async (req) => {
+  if (req.method === "OPTIONS") {
+    return new Response(null, { headers: corsHeaders });
+  }
+
+  try {
+    const provider = req.headers.get("x-ai-provider") || "";
+    const apiKey = req.headers.get("x-ai-key") || "";
+    const { messages } = await req.json();
+
+    if (!apiKey) return jsonError("No API key provided");
+
+    switch (provider) {
+      case "ollama":
+        return await handleOllama(apiKey, messages);
+      case "openai":
+        return await handleOpenAI(apiKey, messages);
+      case "anthropic":
+        return await handleAnthropic(apiKey, messages);
+      case "google":
+        return await handleGoogle(apiKey, messages);
+      default:
+        return jsonError(`Unknown provider: ${provider}`);
+    }
+  } catch (e) {
+    return jsonError(
+      e instanceof Error ? e.message : "Unknown server error",
+      500
+    );
+  }
+});
