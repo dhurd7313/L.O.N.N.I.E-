@@ -4,10 +4,10 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthProvider } from "@/hooks/useAuth";
-import Index from "./pages/Index";
-import Auth from "./pages/Auth";
-import SystemConsent from "./pages/SystemConsent";
-import NotFound from "./pages/NotFound";
+import Index from "./Index";
+import Auth from "./Auth";
+import SystemConsent from "./SystemConsent";
+import NotFound from "./NotFound";
 
 const queryClient = new QueryClient();
 
