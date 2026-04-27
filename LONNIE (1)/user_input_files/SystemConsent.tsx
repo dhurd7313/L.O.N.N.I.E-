@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useAuth } from "./useAuth";
-import { useAuth } from "../useAuth";
+import { useAuth } from "./useAuth";
 
 const SystemConsent = () => {
   const [accepted, setAccepted] = useState(false);
