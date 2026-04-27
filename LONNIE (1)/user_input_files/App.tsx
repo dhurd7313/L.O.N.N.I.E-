@@ -23,6 +23,6 @@ function App() {
       </BrowserRouter>
     </QueryClientProvider>
   );
-}
+};
 
-export default App;
+export default Index;
