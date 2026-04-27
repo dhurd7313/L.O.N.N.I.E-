@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { sendChatMessage, ChatMessage } from "../ai-client";
-import { loadWorkerUrl } from "../ai-provider";
+import { loadWorkerUrl } from "./ai-provider";
 
 interface TerminalChatProps {
   className?: string;
