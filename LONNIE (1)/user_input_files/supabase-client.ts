@@ -1,17 +1,16 @@
-import { createClient } from "@supabase/supabase-js";
+// Supabase has been disabled - using mock auth instead
+// This file is kept for reference but exports nothing
 
-// Environment variables (set in .env file)
-// VITE_SUPABASE_URL=https://your-project.supabase.co
-// VITE_SUPABASE_ANON_KEY=your-anon-key
+export const supabase = null;
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || "";
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
+export type User = {
+  id: string;
+  email: string;
+  displayName?: string;
+};
 
-if (!supabaseUrl || !supabaseAnonKey) {
-  console.warn("Supabase credentials not configured. Auth will be disabled.");
-}
+export type Session = {
+  user: User;
+};
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
-
-// Type exports for convenience
-export type { User, Session, AuthError } from "@supabase/supabase-js";
+export type AuthError = Error;
