@@ -25,4 +25,4 @@ function App() {
   );
 };
 
-export default Index;
+export default App;
