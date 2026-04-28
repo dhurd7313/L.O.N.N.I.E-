@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "./useAuth";
 
-const Auth = () => {
+export default function Auth() {
   const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -124,6 +124,4 @@ const Auth = () => {
       </div>
     </div>
   );
-};
-
-export default Auth;  // <-- MAKE SURE THIS LINE EXISTS
+}
