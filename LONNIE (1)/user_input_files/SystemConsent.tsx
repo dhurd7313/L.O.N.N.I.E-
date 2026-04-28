@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useAuth } from "./useAuth";
+import { useNavigate } from "react-router-dom";
 import { useAuth } from "./useAuth";
 
 const SystemConsent = () => {
